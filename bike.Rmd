@@ -1,0 +1,413 @@
+---
+title: "Forecast daily bike rental demand using time series models"
+date: "`r Sys.Date()`"
+output: html_document
+author: "ALI ASIF"
+---
+
+### About Data Analysis Report
+
+This RMarkdown file contains the report of the data analysis done for the project on forecasting daily bike rental demand using time series models in R. It contains analysis such as data exploration, summary statistics and building the time series models. 
+
+**Data Description:**
+
+The dataset contains the daily count of rental bike transactions between years 2011 and 2012 in Capital bikeshare system with the corresponding weather and seasonal information.
+
+Dataset have the following fields:
+	
+	- instant: record index
+	- dteday : date
+	- season : season (1:winter, 2:spring, 3:summer, 4:fall)
+	- yr : year (0: 2011, 1:2012)
+	- mnth : month ( 1 to 12)
+	- holiday : weather day is holiday or not (extracted from http://dchr.dc.gov/page/holiday-schedule)
+	- weekday : day of the week
+	- workingday : if day is neither weekend nor holiday is 1, otherwise is 0.
+	+ weathersit : 
+		- 1: Clear, Few clouds, Partly cloudy, Partly cloudy
+		- 2: Mist + Cloudy, Mist + Broken clouds, Mist + Few clouds, Mist
+		- 3: Light Snow, Light Rain + Thunderstorm + Scattered clouds, Light Rain + Scattered clouds
+		- 4: Heavy Rain + Ice Pallets + Thunderstorm + Mist, Snow + Fog
+	- temp : Normalized temperature in Celsius. The values are derived via (t-t_min)/(t_max-t_min), t_min=-8, t_max=+39 (only in hourly scale)
+	- atemp: Normalized feeling temperature in Celsius. The values are derived via (t-t_min)/(t_max-t_min), t_min=-16, t_max=+50 (only in hourly scale)
+	- hum: Normalized humidity. The values are divided to 100 (max)
+	- windspeed: Normalized wind speed. The values are divided to 67 (max)
+	- casual: count of casual users
+	- registered: count of registered users
+	- cnt: count of total rental bikes including both casual and registered
+
+
+**Data Source:** https://archive.ics.uci.edu/ml/datasets/bike+sharing+dataset
+
+## Load and explore the data
+
+### Load data and install packages
+```{r Installing Packages}
+## Import required packages
+install.packages("timetk")
+install.packages("lubridate")
+install.packages("dplyr")
+```
+
+### Loading Libraries
+```{r Fetching libraries}
+library(timetk)
+library(lubridate)
+library(dplyr)
+library(forecast)
+library(TTR)
+library(tseries)  # For adf.test()
+```
+
+### Loading Data
+```{r loading Data}
+# Read the CSV files
+dfd <- read.csv("day.csv")
+```
+
+### Describe and explore the data
+```{r Describe and explore the dataframe}
+print("Structure of dfd")
+str(dfd)
+```
+```{r Summary of dfd}
+print("Summary of dfd")
+summary(dfd)
+```
+
+### Correlation Analysis
+Correlation between the normalized temperature and normalized feeling temperature and the total count of bike rentals:
+```{r corr temp and aount of rentals}
+cor(dfd$temp, dfd$cnt)
+cor(dfd$atemp, dfd$cnt)
+```
+
+### Mean and Median of temperature by season
+Mean and median temperatures for different seasons (Winter, Fall, Summer, and Spring)
+```{r mean and median of temps}
+aggregate(temp ~ season, data = dfd, FUN = function(x) c(mean = mean(x), median = median(x)))
+```
+
+### Mean values of different factors per months
+The mean temperature, humidity, wind speed, and total rentals per month
+```{r mean of other factors}
+library(dplyr)
+dfd$dteday <- as.Date(dfd$dteday)
+
+monthly_summary <- dfd %>% 
+  mutate(month = format(dteday, "%Y-%m")) %>%
+  group_by(month) %>%
+  summarise(mean_temp = mean(temp, na.rm = TRUE),
+            mean_humidity = mean(hum, na.rm = TRUE),
+            mean_wind_speed = mean(windspeed, na.rm = TRUE),
+            total_rentals = sum(cnt, na.rm = TRUE))
+print(monthly_summary)
+```
+
+### Relationship between temperature and bike rentals
+Temperature associated with bike rentals (registered vs. casual)
+```{r rship temp and rentals}
+cor(dfd$temp, dfd$registered)
+cor(dfd$temp, dfd$casual)
+
+```
+
+
+## Create interactive time series plots
+
+### Temperatue across seasons
+```{r Temperatue across seasons}
+boxplot(temp ~ season, data = dfd,
+        main = "Temperature by Season",
+        xlab = "Season",
+        ylab = "Normalized Temperature",
+        col = c("blue", "green", "red", "yellow"))
+```
+
+### Monthly rentals and temperature
+```{r Monthly rentals and temperature}
+library(ggplot2)
+
+# Convert month to a proper date format for plotting
+monthly_summary$month <- as.Date(paste0(monthly_summary$month, "-01"))
+
+# Plotting
+ggplot(monthly_summary, aes(x = month)) +
+  geom_line(aes(y = mean_temp, color = "Mean Temperature")) +
+  geom_line(aes(y = total_rentals/100000, color = "Total Rentals (scaled)")) + # Scaling rentals for visibility
+  labs(title = "Mean Temperature and Total Rentals per Month",
+       x = "Month",
+       y = "Value") +
+  scale_y_continuous(sec.axis = sec_axis(~.*100, name = "Total Rentals")) +
+  theme_minimal()
+```
+
+### Interactive time serios plot
+```{r date formating}
+dfd$date <- as.Date(dfd$dteday)  # Ensure the date column is in Date format
+dfd <- dfd %>%
+  mutate(year = year(dteday), month = month(dteday))
+```
+
+```{r aggregate rentals by date}
+# Aggregate data by date to get total rentals per day
+daily_rentals <- dfd %>%
+  group_by(dteday) %>%
+  summarise(total_rentals = sum(cnt, na.rm = TRUE))
+
+# Verify correctness
+head(daily_rentals)  # Check the first few rows of the aggregated data
+str(daily_rentals)   # Check the structure of the data
+```
+
+```{r interactive time serios plot}
+# Create an interactive time series plot
+plot_time_series(
+  .data = daily_rentals,
+  .date_var = dteday,
+  .value = total_rentals,
+  .interactive = TRUE,
+  .plotly_slider = TRUE,
+  .title = "Total Daily Bike Rentals"
+  #.y_label = "Total Rentals"
+)
+```
+
+### Seasonal Diagnostics
+```{r Seasonal diagnostics}
+# Seasonal diagnostics
+plot_seasonal_diagnostics(
+  .data = daily_rentals,
+  .date_var = dteday,
+  .value = total_rentals
+)
+```
+
+### Anomaly Diagnostics
+```{r Anomaly Diagnostics}
+# Anomaly diagnostics
+plot_anomaly_diagnostics(
+  .data = daily_rentals,
+  .date_var = dteday,
+  .value = total_rentals
+)
+```
+
+## Smooth time series data
+```{r Smooth time series data}
+
+# Ensure the dteday column is of Date type and total_rentals is numeric
+daily_rentals$dteday <- as.Date(daily_rentals$dteday)
+daily_rentals$total_rentals <- as.numeric(daily_rentals$total_rentals)
+
+# Step 1: Clean the time series data
+# Create a time series object
+ts_data <- ts(daily_rentals$total_rentals, frequency = 365, start = c(year(min(daily_rentals$dteday)), yday(min(daily_rentals$dteday))))
+
+# Clean the time series data
+cleaned_ts <- tsclean(ts_data)
+
+# Step 2: Apply Simple Exponential Smoothing
+ses_model <- HoltWinters(cleaned_ts, gamma = FALSE)  # Simple Exponential Smoothing
+
+# Step 3: Apply Simple Moving Average with order 10
+sma_values <- SMA(cleaned_ts, n = 10)
+
+# Step 4: Plotting the results
+plot.ts(cleaned_ts, main = "Cleaned Time Series Data", ylab = "Total Rentals", xlab = "Time")
+lines(ses_model$fitted[,1], col = "blue", lwd = 2, lty = 2)  # Fitted values from SES
+lines(sma_values, col = "red", lwd = 2)  # SMA line
+legend("topright", legend = c("Cleaned Data", "SES Fitted", "SMA"), col = c("black", "blue", "red"), lty = c(1, 2, 1), lwd = 2)
+
+```
+
+
+##  Decompose and access the stationarity of time series data
+To decompose time series data and assess its stationarity, we will follow these steps:
+
+*Step 1: Decompose the Time Series  *  
+we will use the decompose() or stl() functions to break down the time series into its components: trend, seasonal, and remainder.
+
+*Step 2: Assess Stationarity*  
+To check if the time series is stationary, we will use:
+
+- Augmented Dickey-Fuller Test (adf.test() from the tseries package).
+- Autocorrelation Function (ACF) and Partial Autocorrelation Function (PACF) plots.
+
+*Step 3: Make the Time Series Stationary*  
+If the time series is not stationary, we will apply differencing using the diff() function.
+
+```{r Stationarity of time series data}
+# Create a time series object
+ts_data <- ts(daily_rentals$total_rentals, frequency = 365, start = c(year(min(daily_rentals$dteday)), yday(min(daily_rentals$dteday))))
+
+# Step 1: Decompose the time series
+decomposed <- stl(ts_data, s.window = "periodic")  # Use stl for seasonal decomposition
+
+# Plot the decomposed components
+plot(decomposed)
+
+# Extract the seasonal component
+seasonal_component <- decomposed$time.series[, "seasonal"]
+
+# Create a stationary time series by removing the seasonal component
+stationary_ts <- ts_data - seasonal_component
+
+# Step 2: Assess stationarity
+
+# Plot ACF and PACF
+par(mfrow = c(1, 2))
+acf(stationary_ts, main = "ACF of Stationary Series")
+pacf(stationary_ts, main = "PACF of Stationary Series")
+
+# Perform Augmented Dickey-Fuller test
+adf_test_result <- adf.test(stationary_ts, alternative = "stationary")
+print(adf_test_result)
+
+# Step 3: Differencing if not stationary
+
+# Check if ADF test p-value is greater than 0.05 (not stationary)
+if (adf_test_result$p.value > 0.05) {
+  differenced_ts <- diff(stationary_ts)
+  # Plot differenced time series
+  plot(differenced_ts, main = "Differenced Time Series", ylab = "Differenced Rentals")
+  
+  # Recheck stationarity
+  adf_test_result_diff <- adf.test(differenced_ts, alternative = "stationary")
+  print(adf_test_result_diff)
+} else {
+  message("The time series is already stationary.")
+}
+```
+
+**Explanation of Steps**  
+*Decompose the Time Series:*  
+1- We used stl() to decompose the time series. This function allows us to view the trend, seasonal, and remainder components.  
+2- Plot the decomposition to visualize these components.  
+
+*Assess Stationarity:*  
+1- Plot the ACF and PACF to visually inspect the autocorrelation structure of the series.  
+2- Use adf.test() to statistically assess stationarity. A p-value > 0.05 indicates that the series is not stationary.  
+
+*Make the Time Series Stationary:*  
+1- If the series is not stationary, apply the diff() function to difference the series and remove trends. This often helps to stabilize the mean of the time series.  
+2- After differencing, recheck stationarity using the ADF test.  
+
+
+  
+  
+## Fit and forecast time series data using ARIMA models:
+
+To fit and forecast time series data using ARIMA models, we will follow these steps in R. This process includes fitting both manual and automatic ARIMA models, checking the residuals, and making forecasts.  
+  
+`Step 1: Fit ARIMA Models`  
+we will fit both manual ARIMA models using the arima() function and automatic models using auto.arima() from the forecast package.  
+  
+`Step 2: Check Residuals`  
+After fitting the models, we will check the residuals to ensure they are normally distributed and uncorrelated.  
+  
+`Step 3: Forecasting`  
+we will use the forecast() function to predict future values and compare the results of the manual and automatic models.  
+
+```{r ARIMA models}
+# Create a time series object
+ts_data <- ts(daily_rentals$total_rentals, frequency = 365, start = c(year(min(daily_rentals$dteday)), yday(min(daily_rentals$dteday))))
+
+# Step 1: Fit Manual ARIMA Model
+manual_arima_model <- arima(ts_data, order = c(1, 1, 1))  # Change (p,d,q) as necessary
+summary(manual_arima_model)
+
+# Step 2: Fit Automatic ARIMA Model
+auto_arima_model <- auto.arima(ts_data)
+summary(auto_arima_model)
+
+# Step 3: Check Residuals for manual ARIMA model
+residuals_manual <- residuals(manual_arima_model)
+shapiro_test_manual <- shapiro.test(residuals_manual)
+
+print(shapiro_test_manual)
+
+# Plot ACF and PACF of residuals
+par(mfrow = c(1, 2))
+acf(residuals_manual, main = "ACF of Manual ARIMA Residuals")
+pacf(residuals_manual, main = "PACF of Manual ARIMA Residuals")
+
+# Check residuals for automatic ARIMA model
+residuals_auto <- residuals(auto_arima_model)
+shapiro_test_auto <- shapiro.test(residuals_auto)
+print(shapiro_test_auto)
+```
+
+``` {r Forecast next 25 observations with ARIMA}
+# Step 4: Forecasting
+# Forecast next 25 observations with Manual ARIMA
+forecast_manual <- forecast(manual_arima_model, h = 25)
+plot(forecast_manual, main = "Forecast from Manual ARIMA Model")
+
+# Forecast next 25 observations with Automatic ARIMA
+forecast_auto <- forecast(auto_arima_model, h = 25)
+plot(forecast_auto, main = "Forecast from Automatic ARIMA Model")
+``` 
+
+
+  
+**Explanation of Steps**  
+`Fit ARIMA Models:`  
+
+1- `Manual ARIMA`: Adjust the (p, d, q) values based on your analysis of ACF and PACF plots. The example uses (1, 1, 1), but you may want to experiment with different values.  
+2- `Automatic ARIMA:` The auto.arima() function automatically selects the best ARIMA model based on AIC/BIC criteria.  
+  
+
+`Check Residuals:`
+1- Use the Shapiro-Wilk test to check for normality of the residuals. A p-value > 0.05 suggests that the residuals are normally distributed.  
+2- Plot ACF and PACF of the residuals to identify any patterns. Ideally, the residuals should be white noise (no significant correlations).  
+  
+`Forecasting`:  
+1-Use the forecast() function to generate forecasts for the next 25 observations. This will give you both point forecasts and confidence intervals.  
+2-Plot the forecasts for visual analysis.  
+  
+`Comments on Forecasts`  
+After running the code, you can compare the forecasts from both models based on their accuracy, trend patterns, and any other insights you might gather from the foreca plots. This will help you decide which model is more suitable for your data.  
+
+
+# Task Six: Findings and Conclusions  
+  
+Throughout the process of this project, I gained valuable insights and developed a deeper understanding of the subject matter. The research journey involved thorough data analysis and interpretation, which allowed me to explore various facets of the topic. Here are some of the key components of my findings and conclusions:  
+  
+**`Key Learnings`**  
+`1. Data Handling:`  
+I improved my skills in data manipulation and visualization. Using R and its packages enabled me to clean, transform, and visualize data effectively, reinforcing the importance of data quality in analysis.
+
+`2. Analytical Techniques:`  
+I became familiar with different statistical methods and how to apply them to derive meaningful insights from the data. This hands-on experience solidified my understanding of concepts learned in theory.
+
+`3. Critical Thinking:`  
+The project encouraged me to think critically about the results and their implications. I learned to question assumptions and consider alternative explanations for the patterns observed in the data.
+
+**`Results vs. Expectations`**  
+The results obtained were somewhat aligned with my expectations but also presented some surprises. I anticipated certain trends based on preliminary research, yet some findings contradicted my hypotheses. This highlighted the value of data-driven insights over preconceived notions.
+
+**`Key Findings and Takeaways`**  
+`1. Trends and Patterns:`  
+The analysis revealed significant trends that were likely obvious such the impact of temperature and seasons on the total rental, and some that were not immediately obvious, underscoring the importance of comprehensive data analysis in uncovering hidden insights.  
+  
+`2. Implications for Practice:`  
+The findings suggest practical applications in the relevant field, which could inform future decision-making processes. This emphasizes the relevance of empirical evidence in shaping policies and strategies.  
+  
+`3. Future Research Directions:`  
+In this prece of work i have include or worked on the data that has only the day related data. however we can deepen this research by i=ncluding the data of hour. Also we can include or bring into work the holiday data. The project identified gaps in the current literature, paving the way for further research. Future studies could build on these findings to explore additional variables or refine the analysis methods used.
+  
+In conclusion, this project not only enhanced my technical skills but also deepened my understanding of the subject matter. The experience reinforced the significance of a rigorous approach to research and the need to remain open to new insights that data may reveal.
+  
+`MOHAMMAD ALI ASIF` Dated:`r date()`
+
+
+
+
+
+
+
+
+
+
+
